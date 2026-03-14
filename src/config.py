@@ -61,6 +61,8 @@ class TivTaamConfig:
         self.login_timeout = float(os.getenv("TIVTAAM_LOGIN_TIMEOUT_SECONDS", "120"))
         self.max_results = int(os.getenv("TIVTAAM_MAX_SEARCH_RESULTS", "8"))
         self.debug_http = os.getenv("TIVTAAM_DEBUG_HTTP", "false").lower() == "true"
+        # 1 = Hebrew, 2 = English. Hebrew gives better relevance for Israeli searches.
+        self.language_id = int(os.getenv("TIVTAAM_LANGUAGE_ID", "1"))
         # Auto-login credentials (optional)
         self.email = os.getenv("TIVTAAM_EMAIL", "")
         self.password = os.getenv("TIVTAAM_PASSWORD", "")

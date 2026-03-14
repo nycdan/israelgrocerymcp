@@ -17,13 +17,19 @@ STORE_NAME = "Tiv Taam"
 _BROWSER_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
     "Origin": "https://www.tivtaam.co.il",
     "Referer": "https://www.tivtaam.co.il/",
+    # Required by the Tiv Taam API — without this the products endpoint returns 403
+    "X-Requested-With": "XMLHttpRequest",
 }
+
+# The products search endpoint requires a `filters` param (Elasticsearch-style).
+# Omitting it returns 403. An empty filter object unlocks all results; `q` drives ranking.
+_EMPTY_FILTERS = json.dumps({"must": {}, "mustNot": {}})
 
 
 class TivTaamStore(BaseStore):
@@ -127,16 +133,33 @@ class TivTaamStore(BaseStore):
     # Products
     # ------------------------------------------------------------------
 
+    def _search_params(self, query: str, max_results: int) -> dict:
+        """Build product search params the Stor.ai API actually accepts.
+
+        Key findings from reverse-engineering the frontend:
+        - `query` drives full-text relevance (not `q`)
+        - `languageId` must match the script of the query for best results
+        - `isSearch=true` activates the search-ranking pipeline
+        - `filters` (JSON) is required; without it the endpoint returns 403
+        - `mustNot.term["branch.isOutOfStock"]` hides out-of-stock items
+        """
+        filters = json.dumps({
+            "must": {},
+            "mustNot": {"term": {"branch.isOutOfStock": True}},
+        })
+        return {
+            "query": query,
+            "from": "0",
+            "size": str(max_results),
+            "languageId": str(self._cfg.language_id),
+            "isSearch": "true",
+            "filters": filters,
+        }
+
     async def search(self, query: str, max_results: int = 8) -> list[StoreProduct]:
         client = await self._get_client()
-        params = {
-            "q": query,
-            "page": "1",
-            "itemsCount": str(max_results),
-            "storefront": "mobile_web",
-        }
         try:
-            resp = await client.get(self._cfg.products_url, params=params)
+            resp = await client.get(self._cfg.products_url, params=self._search_params(query, max_results))
             if resp.status_code != 200:
                 return []
             return self._parse_products(resp.json(), max_results)
@@ -145,9 +168,8 @@ class TivTaamStore(BaseStore):
 
     async def raw_search(self, query: str) -> dict:
         client = await self._get_client()
-        params = {"q": query, "page": "1", "itemsCount": "3", "storefront": "mobile_web"}
         try:
-            resp = await client.get(self._cfg.products_url, params=params)
+            resp = await client.get(self._cfg.products_url, params=self._search_params(query, 3))
             try:
                 body = resp.json()
             except Exception:
@@ -180,54 +202,88 @@ class TivTaamStore(BaseStore):
         return products
 
     def _parse_product(self, item: dict) -> StoreProduct:
-        price_data = item.get("price") or {}
-        if isinstance(price_data, (int, float)):
-            price = float(price_data)
-            unit_price = None
-        else:
-            price = float(price_data.get("base", 0) or price_data.get("regular", 0) or 0) or None
-            up = price_data.get("unitPrice") or price_data.get("unit_price")
-            unit_price = float(up) if up else None
+        # Prices live in item.branch (per-branch pricing from the v2 API)
+        branch = item.get("branch") or {}
 
-        sale_raw = item.get("salePrice") or item.get("sale_price")
-        sale_price = float(sale_raw) if sale_raw else None
+        # Weighable (loose produce): isWeighable=True, price is stored per-gram in the API
+        # so we multiply by 1000 to get the human-readable price-per-kg.
+        is_weighable = bool(item.get("isWeighable", False))
+        unit_resolution = float(item.get("unitResolution") or 0)
 
-        cat_data = (item.get("categories") or [{}])[0] if item.get("categories") else {}
-        if isinstance(cat_data, dict):
-            names = cat_data.get("names") or {}
-            category = names.get("he") or names.get("en") or cat_data.get("name", "")
-        else:
-            category = str(cat_data)
+        # regularPrice for weighable items is already ₪/kg (the JS divides it by 1000
+        # internally to get price-per-gram, so the raw value is the human-readable per-kg price).
+        price_raw = branch.get("regularPrice") or item.get("price")
+        price = float(price_raw) if price_raw else None
 
+        # Sale price from branch specials array
+        specials = branch.get("specials") or []
+        sale_price: Optional[float] = None
+        if specials and isinstance(specials[0], dict):
+            sp = specials[0].get("price")
+            sale_price = float(sp) if sp else None
+
+        in_stock = not branch.get("isOutOfStock", False)
+
+        # Names: {"1": {"short": "...", "long": "..."}, "2": {...}} where 1=Hebrew, 2=English
         name_data = item.get("names") or item.get("name") or {}
         if isinstance(name_data, dict):
-            name = name_data.get("he") or name_data.get("en") or name_data.get("short", "")
+            he = name_data.get("1") or {}
+            en = name_data.get("2") or {}
+            name = (
+                (he.get("short") or he.get("long") if isinstance(he, dict) else str(he))
+                or (en.get("short") or en.get("long") if isinstance(en, dict) else str(en))
+                or ""
+            )
         else:
             name = str(name_data)
 
-        brand_data = item.get("brand") or item.get("manufacture") or {}
+        # Brand names: {"names": {"1": "תנובה", "2": "Tnuva"}}
+        brand_data = item.get("brand") or {}
         if isinstance(brand_data, dict):
-            brand = brand_data.get("name") or brand_data.get("he", "")
+            brand_names = brand_data.get("names") or {}
+            brand = brand_names.get("2") or brand_names.get("1") or brand_data.get("name", "")
         else:
             brand = str(brand_data) if brand_data else ""
 
-        images = item.get("images") or []
-        image_url = images[0].get("url", "") if images and isinstance(images[0], dict) else ""
+        # Department / category
+        dept = item.get("department") or {}
+        if isinstance(dept, dict):
+            dept_names = dept.get("names") or {}
+            category = dept_names.get("2") or dept_names.get("1") or ""
+        else:
+            category = ""
+
+        # Image
+        image_obj = item.get("image") or {}
+        image_url = image_obj.get("url", "") if isinstance(image_obj, dict) else ""
+
+        # unitOfMeasure is a dict like {"id":5,"defaultName":"מ\"ל","names":{"1":"מ\"ל","2":"ml"}}
+        uom = item.get("unitOfMeasure") or {}
+        if isinstance(uom, dict):
+            uom_names = uom.get("names") or {}
+            weight_unit = (
+                uom_names.get("2")  # English name preferred
+                or uom_names.get("1")
+                or uom.get("defaultName", "")
+            )
+        else:
+            weight_unit = str(uom)
 
         return StoreProduct(
             store_id=STORE_ID,
-            product_id=str(item.get("id", 0)),
+            product_id=str(item.get("id") or item.get("retailerProductId") or 0),
             name=str(name),
             price=price,
             sale_price=sale_price,
             is_on_sale=bool(sale_price and price and sale_price < price),
             brand=str(brand),
             category=str(category),
-            in_stock=not item.get("outOfStock", False),
+            in_stock=in_stock,
             image_url=image_url,
             weight=item.get("weight"),
-            weight_unit=item.get("weightUnit", ""),
-            unit_price=unit_price,
+            weight_unit=weight_unit,
+            is_weighable=is_weighable,
+            unit_resolution=unit_resolution,
         )
 
     # ------------------------------------------------------------------
@@ -244,6 +300,20 @@ class TivTaamStore(BaseStore):
         except Exception:
             return CartView(store_id=STORE_ID)
 
+    async def _fetch_product_meta(self, product_id: str) -> dict:
+        """Fetch a single product to read isWeighable and unitResolution."""
+        client = await self._get_client()
+        try:
+            r = await client.get(
+                f"{self._cfg.products_url}/{product_id}",
+                params={"filters": _EMPTY_FILTERS},
+            )
+            if r.status_code == 200:
+                return r.json() or {}
+        except Exception:
+            pass
+        return {}
+
     async def add_to_cart(
         self,
         product_id: str,
@@ -256,6 +326,20 @@ class TivTaamStore(BaseStore):
                 success=False, store_id=STORE_ID, product_id=product_id, quantity=quantity,
                 message="Not logged in to Tiv Taam. Use login_tivtaam(email, password).",
             )
+
+        # Determine the correct soldBy and minimum quantity for this product.
+        # Weighable items (loose produce) are sold by kg; the API stores price per-gram,
+        # and the cart quantity must be in kg (e.g. 0.5 = 500 g).
+        meta = await self._fetch_product_meta(product_id)
+        is_weighable = bool(meta.get("isWeighable", False))
+        unit_resolution = float(meta.get("unitResolution") or 0)
+
+        if is_weighable:
+            sold_by = "weight"
+            # If caller passed a whole-unit count (1, 2, …) and the item is loose produce,
+            # treat it as kg directly (1 → 1 kg). Clamp to the minimum resolution.
+            min_qty = unit_resolution if unit_resolution > 0 else 0.1
+            quantity = max(quantity, min_qty)
 
         current = await self.get_cart()
         cart_id = current.cart_id or (session.get("cart_id") or None)
@@ -307,10 +391,11 @@ class TivTaamStore(BaseStore):
                 session["cart_id"] = str(new_cart_id)
                 self._ss.save_session(STORE_ID, session)
 
+            qty_label = f"{quantity} kg" if is_weighable else f"×{quantity}"
             return CartMutationResult(
                 success=True, store_id=STORE_ID,
                 product_id=product_id, quantity=quantity,
-                message=f"Added to Tiv Taam cart (cart_id={new_cart_id}).",
+                message=f"Added {qty_label} to Tiv Taam cart (cart_id={new_cart_id}).",
                 cart=self._parse_cart(data),
             )
         except Exception as exc:

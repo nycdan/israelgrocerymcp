@@ -45,9 +45,12 @@ class StoreProduct(BaseModel):
     product_url: str = ""
     # Tiv Taam-specific
     image_url: str = ""
-    weight: Optional[float] = None
+    weight: Optional[float] = None          # grams per unit (for packaged) or None
     weight_unit: str = ""
     unit_price: Optional[float] = None
+    # Weighable produce (loose items sold by kg)
+    is_weighable: bool = False              # True → quantity in cart = kg, price = per-kg
+    unit_resolution: float = 0.0           # minimum cart increment (kg), e.g. 0.1 = 100g steps
 
     @property
     def effective_price(self) -> Optional[float]:
@@ -59,9 +62,10 @@ class StoreProduct(BaseModel):
         ep = self.effective_price
         if ep is None:
             return "price unknown"
+        unit_label = "/kg" if self.is_weighable else ""
         if self.is_on_sale and self.sale_price and self.price:
-            return f"{self.sale_price:.2f}₪ 🔖 (was {self.price:.2f}₪)"
-        return f"{ep:.2f}₪"
+            return f"{self.sale_price:.2f}₪{unit_label} (was {self.price:.2f}₪{unit_label})"
+        return f"{ep:.2f}₪{unit_label}"
 
 
 # ---------------------------------------------------------------------------
