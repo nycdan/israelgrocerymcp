@@ -29,12 +29,6 @@ def score_product(
     if ingredient.name.lower() in product.name.lower():
         score += 15.0
 
-    # Availability
-    if product.in_stock:
-        score += 5.0
-    else:
-        score -= 20.0
-
     # Sale price bonus (budget shoppers love it)
     if product.is_on_sale:
         score += 8.0 if prefs.prefer_budget else 3.0
@@ -71,8 +65,13 @@ def choose_best(
     if not products:
         return None, 0.0
 
+    # Hard-exclude out-of-stock items. Only fall back to them if every candidate
+    # is out of stock (shouldn't happen given the search filter, but be safe).
+    in_stock = [p for p in products if p.in_stock]
+    candidates = in_stock if in_stock else products
+
     scored = sorted(
-        [(p, score_product(ingredient, p, prefs)) for p in products],
+        [(p, score_product(ingredient, p, prefs)) for p in candidates],
         key=lambda x: x[1],
         reverse=True,
     )

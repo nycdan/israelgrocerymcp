@@ -27,11 +27,14 @@ def test_exact_token_match_scores_higher():
     assert score_product(ing, exact, _PREFS) > score_product(ing, unrelated, _PREFS)
 
 
-def test_out_of_stock_penalty():
+def test_out_of_stock_excluded():
+    """choose_best must never return an out-of-stock product when an in-stock one exists."""
     ing = _ingredient("milk")
     in_stock = _product("Milk 1L", in_stock=True)
-    out_of_stock = _product("Milk 1L", in_stock=False)
-    assert score_product(ing, in_stock, _PREFS) > score_product(ing, out_of_stock, _PREFS)
+    out_of_stock = _product("Milk 1L Premium", in_stock=False)
+    best, _ = choose_best(ing, [out_of_stock, in_stock], _PREFS)
+    assert best is not None
+    assert best.in_stock, "choose_best returned an out-of-stock product"
 
 
 def test_organic_preference_bonus():

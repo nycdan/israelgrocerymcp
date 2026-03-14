@@ -191,7 +191,16 @@ class ShufersalStore(BaseStore):
         )
         brand = str(record.get("brand") or record.get("brandName") or "")
         size_text = str(record.get("packageSize") or record.get("size") or record.get("unitText") or "")
-        in_stock = record.get("inStock")
+        # Treat unknown stock status as out-of-stock to avoid adding unavailable items.
+        # Shufersal JSON uses inStock=true/false; some API responses omit the field.
+        in_stock_raw = record.get("inStock")
+        if in_stock_raw is None:
+            # Fall back to checking explicit out-of-stock / purchasable flags
+            out_flags = ("purchasable", "available", "isAvailable")
+            in_stock = any(record.get(f) for f in out_flags) or False
+        else:
+            in_stock = bool(in_stock_raw)
+
         return StoreProduct(
             store_id=STORE_ID,
             product_id=str(product_id),
@@ -199,7 +208,7 @@ class ShufersalStore(BaseStore):
             price=price,
             brand=brand,
             size_text=size_text,
-            in_stock=True if in_stock is None else bool(in_stock),
+            in_stock=in_stock,
             currency=self._cfg.currency,
             product_url=str(url),
         )
@@ -235,12 +244,17 @@ class ShufersalStore(BaseStore):
                     continue
                 price_node = node.select_one(".price, .linePrice, [data-price]")
                 price = _as_float(price_node.get_text(" ", strip=True) if price_node else None)
+                # Detect out-of-stock from common Shufersal HTML class markers
+                oos_markers = ("out-of-stock", "outOfStock", "not-available", "soldOut", "disabled")
+                node_classes = " ".join(node.get("class") or [])
+                is_oos = any(m.lower() in node_classes.lower() for m in oos_markers)
                 p = StoreProduct(
                     store_id=STORE_ID,
                     product_id=str(pid),
                     name=str(name),
                     price=price,
                     currency=self._cfg.currency,
+                    in_stock=not is_oos,
                 )
                 seen.setdefault(p.product_id, p)
         return list(seen.values())
