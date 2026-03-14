@@ -453,3 +453,116 @@ class TivTaamStore(BaseStore):
             total=total,
             item_count=len(lines),
         )
+
+    # ------------------------------------------------------------------
+    # Cart verification & auto-swap
+    # ------------------------------------------------------------------
+
+    async def _is_product_in_stock(self, product_id: str) -> bool:
+        """Live stock check for a single product ID."""
+        meta = await self._fetch_product_meta(product_id)
+        if not meta:
+            return False
+        branch = meta.get("branch") or {}
+        return not branch.get("isOutOfStock", True)
+
+    async def verify_and_fix_cart(
+        self,
+        ingredient_hints: Optional[dict[str, str]] = None,
+    ) -> dict:
+        """
+        Re-check every cart line for live stock status and swap out-of-stock items.
+
+        Args:
+            ingredient_hints: Optional mapping of product_id → ingredient name,
+                used to find a better replacement query.
+
+        Returns a dict with keys:
+            verified   – list of (product_id, name) that are in stock
+            swapped    – list of (old_name, new_name, new_price) replacements
+            failed     – list of names that could not be replaced
+            cart       – updated CartView
+        """
+        cart = await self.get_cart()
+        if not cart.lines:
+            return {"verified": [], "swapped": [], "failed": [], "cart": cart}
+
+        verified: list[str] = []
+        swapped: list[dict] = []
+        failed: list[str] = []
+
+        # Check each line concurrently
+        import asyncio as _asyncio
+
+        async def _check_line(line: "CartLine"):  # type: ignore[name-defined]
+            in_stock = await self._is_product_in_stock(line.product_id)
+            return line, in_stock
+
+        results = await _asyncio.gather(*[_check_line(l) for l in cart.lines])
+
+        oos_lines = [(line, ) for line, ok in results if not ok]
+        for line, ok in results:
+            if ok:
+                verified.append(line.product_name)
+
+        # For each out-of-stock line, search for a replacement
+        for (line,) in oos_lines:
+            hint = (ingredient_hints or {}).get(line.product_id, "") or line.product_name
+            # Search for a replacement — use the product name as the query
+            replacements = await self.search(hint, max_results=10)
+            # Exclude the current (oos) product
+            candidates = [p for p in replacements if p.product_id != line.product_id and p.in_stock]
+            if not candidates:
+                failed.append(line.product_name)
+                continue
+
+            # Pick the candidate with the closest name (first result is most relevant)
+            replacement = candidates[0]
+
+            # Update the cart: replace the old line quantity with the new product
+            await self.add_to_cart(replacement.product_id, line.quantity)
+
+            # Remove the old out-of-stock line by setting its quantity to 0
+            await self._remove_cart_line(line.product_id, line.quantity)
+
+            swapped.append({
+                "old": line.product_name,
+                "new": replacement.name,
+                "price": replacement.display_price,
+                "product_id": replacement.product_id,
+            })
+
+        cart = await self.get_cart()
+        return {"verified": verified, "swapped": swapped, "failed": failed, "cart": cart}
+
+    async def _remove_cart_line(self, product_id: str, quantity: float) -> None:
+        """Remove a product from the cart by setting its quantity to 0."""
+        session = self._ss.load_session(STORE_ID)
+        if not session:
+            return
+        cart_id = session.get("cart_id")
+        if not cart_id:
+            current = await self.get_cart()
+            cart_id = current.cart_id
+        if not cart_id:
+            return
+
+        current = await self.get_cart()
+        pid_int = int(product_id) if product_id.isdigit() else product_id
+        merged = [
+            {
+                "retailerProductId": int(l.product_id) if l.product_id.isdigit() else l.product_id,
+                "quantity": l.quantity,
+                "soldBy": "weight" if l.is_weighted else "unit",
+                "type": 1,
+                "isCase": False,
+            }
+            for l in current.lines
+            if (int(l.product_id) if l.product_id.isdigit() else l.product_id) != pid_int
+        ]
+
+        client = await self._get_client()
+        try:
+            await client.patch(f"{self._cfg.carts_url}/{cart_id}", json={"lines": merged})
+        except Exception:
+            pass

@@ -307,6 +307,54 @@ async def add_to_cart(store_id: str, product_id: str, quantity: float = 1.0) -> 
     return f"❌ {result.message}"
 
 
+@mcp.tool()
+async def verify_cart(store_id: str = "tivtaam") -> str:
+    """
+    Re-check every item in the cart for live stock availability and automatically
+    swap out-of-stock items with the best available replacement.
+
+    Call this after adding all items to a cart to catch anything that went
+    out of stock between search and checkout.
+
+    Args:
+        store_id: Which store cart to verify. Currently supports "tivtaam".
+    """
+    if store_id != "tivtaam":
+        return f"Cart verification is not yet supported for {store_id}."
+
+    store = _get_registry().get_or_raise(store_id)
+    if not isinstance(store, TivTaamStore):
+        return "Store is not a TivTaamStore instance."
+
+    result = await store.verify_and_fix_cart()
+
+    lines = ["**Cart verification complete:**\n"]
+
+    if result["verified"]:
+        lines.append(f"✅ In stock ({len(result['verified'])}):")
+        for name in result["verified"]:
+            lines.append(f"   • {name}")
+
+    if result["swapped"]:
+        lines.append(f"\n🔄 Swapped out-of-stock items ({len(result['swapped'])}):")
+        for s in result["swapped"]:
+            lines.append(f"   • {s['old']}  →  {s['new']}  {s['price']}")
+
+    if result["failed"]:
+        lines.append(f"\n⚠️  Could not find a replacement for ({len(result['failed'])}):")
+        for name in result["failed"]:
+            lines.append(f"   • {name}  (remove manually or try a different search)")
+
+    cart = result.get("cart")
+    if cart and cart.total:
+        lines.append(f"\nCart total: {cart.total:.2f}₪  ({cart.item_count} items)")
+
+    if not result["swapped"] and not result["failed"]:
+        lines.append("\nAll items are in stock — no changes needed.")
+
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Recipe tools
 # ---------------------------------------------------------------------------
@@ -453,11 +501,6 @@ async def add_recipe_to_cart(
         else:
             errors.append(f"{match.ingredient.name}: {result.message}")
 
-    # Persist session after cart mutations (Tiv Taam cart_id)
-    for store in stores:
-        if hasattr(store, "_ss") and hasattr(store, "_cfg"):
-            pass  # cart_id already saved inside add_to_cart
-
     lines = [f"**{plan.title}** — cart update:"]
     if added:
         lines.append(f"\n✅ Added ({len(added)}):")
@@ -471,6 +514,25 @@ async def add_recipe_to_cart(
     if errors:
         lines.append(f"\n❌ Errors ({len(errors)}):")
         lines.extend(f"   • {e}" for e in errors)
+
+    # Auto-verify stock after all adds — swap out anything that went OOS
+    if added:
+        stores_with_adds = {a.split("]")[0].lstrip("[") for a in added if a.startswith("[")}
+        for sid in stores_with_adds:
+            store_obj = _get_registry().get_or_raise(sid)
+            if isinstance(store_obj, TivTaamStore):
+                verify_result = await store_obj.verify_and_fix_cart()
+                if verify_result["swapped"]:
+                    lines.append(f"\n🔄 Auto-swapped out-of-stock items:")
+                    for s in verify_result["swapped"]:
+                        lines.append(f"   • {s['old']}  →  {s['new']}  {s['price']}")
+                if verify_result["failed"]:
+                    lines.append(f"\n⚠️  No replacement found for:")
+                    for name in verify_result["failed"]:
+                        lines.append(f"   • {name}")
+                if not verify_result["swapped"] and not verify_result["failed"]:
+                    lines.append("\n✅ All cart items verified in stock.")
+
     return "\n".join(lines)
 
 
