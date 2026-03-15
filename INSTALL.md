@@ -145,3 +145,11 @@ Make sure your `.env` file exists in the `israelgrocerymcp` folder (not the pare
 
 **Shufersal login**
 Shufersal requires a browser-based login. Ask Claude: *"Log me in to Shufersal"* — it will open a browser window for you to complete the login once, then sessions are saved automatically.
+
+**Rami Levy login / "Playwright isn't installed"**
+Rami Levy uses the same Chromium browser. If you see "Playwright isn't installed", run:
+```bash
+cd /path/to/your/israelgrocery
+uv run playwright install chromium
+```
+Then restart Claude Desktop. For Rami Levy: ask *"Log me in to Rami Levy"* → browser opens → log in → close browser → ask *"Capture my Rami Levy session"*.

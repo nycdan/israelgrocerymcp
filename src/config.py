@@ -88,6 +88,31 @@ class TivTaamConfig:
         return f"{self.base_url}/v2/retailers/{self.retailer_id}/branches/{self.branch_id}/carts"
 
 
+class RamiLevyConfig:
+    def __init__(self) -> None:
+        self.base_url = os.getenv("RAMILEVI_BASE_URL", "https://www.rami-levy.co.il")
+        self.auth_base_url = os.getenv("RAMILEVI_AUTH_BASE_URL", "https://www-api.rami-levy.co.il")
+        # store_id 331 = general search store; cart_store_id = delivery store (set after address)
+        self.store_id = int(os.getenv("RAMILEVI_STORE_ID", "331"))
+        self.cart_store_id = int(os.getenv("RAMILEVI_CART_STORE_ID", "412"))
+        self.request_timeout = float(os.getenv("RAMILEVI_REQUEST_TIMEOUT_SECONDS", "20"))
+        self.max_results = int(os.getenv("RAMILEVI_MAX_SEARCH_RESULTS", "8"))
+        # Optional: pre-seed email so Claude can call login_ramilevi without asking for it
+        self.email = os.getenv("RAMILEVI_EMAIL", "")
+
+    @property
+    def login_url(self) -> str:
+        return f"{self.auth_base_url}/api/v2/site/auth/login"
+
+    @property
+    def catalog_url(self) -> str:
+        return f"{self.base_url}/api/catalog"
+
+    @property
+    def cart_url(self) -> str:
+        return f"{self.base_url}/api/v2/cart"
+
+
 # ---------------------------------------------------------------------------
 # Top-level app settings
 # ---------------------------------------------------------------------------
@@ -100,6 +125,7 @@ class AppSettings:
     max_search_results: int
     shufersal: ShufersalConfig
     tivtaam: TivTaamConfig
+    ramilevi: RamiLevyConfig
 
     def __init__(self) -> None:
         self.state_dir = Path(os.getenv("ISRAELGROCERY_STATE_DIR", ".local/state"))
@@ -108,6 +134,7 @@ class AppSettings:
         self.max_search_results = int(os.getenv("ISRAELGROCERY_MAX_SEARCH_RESULTS", "8"))
         self.shufersal = ShufersalConfig()
         self.tivtaam = TivTaamConfig()
+        self.ramilevi = RamiLevyConfig()
 
     def ensure_dirs(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)

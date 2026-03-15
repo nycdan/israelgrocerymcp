@@ -6,6 +6,7 @@ from typing import Optional
 from auth.session_store import MultiStoreSessionStore
 from config import AppSettings
 from stores.base import BaseStore
+from stores.ramilevy import RamiLevyStore
 from stores.shufersal import ShufersalStore
 from stores.tivtaam import TivTaamStore
 
@@ -39,4 +40,5 @@ def build_registry(settings: AppSettings, session_store: MultiStoreSessionStore)
     registry = StoreRegistry()
     registry.register(ShufersalStore(settings.shufersal, session_store))
     registry.register(TivTaamStore(settings.tivtaam, session_store))
+    registry.register(RamiLevyStore(settings.ramilevi, session_store))
     return registry

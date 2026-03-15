@@ -9,10 +9,12 @@ from mcp.server.fastmcp import FastMCP
 from auth.session_store import MultiStoreSessionStore
 from comparison.engine import compare_recipe, format_comparison
 from config import AppSettings
+from query_hebrew import query_to_hebrew
 from matching.product_search import search_ingredient_across_stores, search_ingredient_in_store
 from models import AddItemRequest, IngredientMatch, UserPreferences
 from recipes.parser import fetch_recipe_from_url, parse_recipe_text
 from stores import StoreRegistry, build_registry
+from stores.ramilevy import RamiLevyStore
 from stores.tivtaam import TivTaamStore
 
 mcp = FastMCP("Israel Grocery")
@@ -112,13 +114,34 @@ async def login_shufersal() -> str:
     return await store.start_browser_login(str(settings.browser_dir))  # type: ignore[attr-defined]
 
 
+def _ramilevi_browser_dir() -> str:
+    settings = _get_settings()
+    d = settings.browser_dir / "ramilevi"
+    d.mkdir(parents=True, exist_ok=True)
+    return str(d)
+
+
+@mcp.tool()
+async def login_ramilevi_browser() -> str:
+    """
+    Log in to Rami Levy — NO email or password needed from the user.
+    Opens a browser window. The user logs in (click התחברות, enter email, SMS code).
+    The token is captured automatically once login completes — no second step needed.
+    Use this as the primary Rami Levy login method.
+    """
+    registry = _get_registry()
+    store = registry.get_or_raise("ramilevi")
+    assert isinstance(store, RamiLevyStore)
+    return await store.browser_login(_ramilevi_browser_dir())
+
+
 @mcp.tool()
 async def check_login(store_id: Optional[str] = None) -> str:
     """
     Perform a live login check for one or all stores.
 
     Args:
-        store_id: "shufersal" or "tivtaam", or omit for all.
+        store_id: "shufersal", "tivtaam", or "ramilevi" — omit for all.
     """
     stores = _active_stores([store_id] if store_id else None)
     lines = []
@@ -197,22 +220,24 @@ async def search_products(
 ) -> str:
     """
     Search for products across all (or selected) grocery stores.
+    English queries are automatically translated to Hebrew for better Israeli store results.
 
     Args:
         query: Search term (English or Hebrew).
         stores: Limit to specific stores, e.g. ["tivtaam"] or ["shufersal", "tivtaam"].
         max_results: Max results per store (default: 8).
     """
+    search_query = query_to_hebrew(query)
     active = _active_stores(stores)
     all_lines: list[str] = []
     for store in active:
         try:
-            products = await store.search(query, max_results=max_results)
+            products = await store.search(search_query, max_results=max_results)
         except Exception as exc:
             all_lines.append(f"\n**{store.store_name}**: error — {exc}")
             continue
         if not products:
-            all_lines.append(f"\n**{store.store_name}**: no results for '{query}'")
+            all_lines.append(f"\n**{store.store_name}**: no results for '{search_query}'")
             continue
         all_lines.append(f"\n**{store.store_name}** ({len(products)} results):")
         for p in products:
@@ -220,20 +245,22 @@ async def search_products(
             brand = f" [{p.brand}]" if p.brand else ""
             all_lines.append(f"  [{stock}] ID:{p.product_id:<10}  {p.name}{brand}  {p.display_price}")
     if not all_lines:
-        return f"No results found for '{query}'."
-    return f"Search: **'{query}'**" + "\n".join(all_lines)
+        return f"No results found for '{search_query}'."
+    return f"Search: **'{search_query}'**" + "\n".join(all_lines)
 
 
 @mcp.tool()
 async def compare_prices(query: str) -> str:
     """
     Compare prices for a product across all connected stores.
+    English queries are translated to Hebrew for better Israeli store results.
 
     Args:
-        query: What you're looking for (e.g. "eggs", "chicken breast").
+        query: What you're looking for (e.g. "eggs", "chicken breast", "lady apples").
     """
     from models import IngredientIntent
-    ing = IngredientIntent(raw=query, name=query)
+    search_query = query_to_hebrew(query)
+    ing = IngredientIntent(raw=query, name=search_query)
     prefs = _get_prefs()
     stores = _get_registry().all()
     match = await search_ingredient_across_stores(ing, stores, prefs)
@@ -263,7 +290,7 @@ async def show_cart(store_id: Optional[str] = None) -> str:
     Show the current cart contents.
 
     Args:
-        store_id: "shufersal" or "tivtaam". If omitted, shows all carts.
+        store_id: "shufersal", "tivtaam", or "ramilevi". If omitted, shows all carts.
     """
     stores = _active_stores([store_id] if store_id else None)
     parts: list[str] = []
@@ -292,7 +319,7 @@ async def add_to_cart(store_id: str, product_id: str, quantity: float = 1.0) -> 
     Add a specific product to a store's cart.
 
     Args:
-        store_id: "shufersal" or "tivtaam".
+        store_id: "shufersal", "tivtaam", or "ramilevi".
         product_id: The product ID from search results.
         quantity: Number of units (default: 1).
     """
@@ -548,9 +575,10 @@ async def diagnose(store_id: Optional[str] = None, test_query: str = "eggs") -> 
     Shows session status, raw API response, and parsed result count.
 
     Args:
-        store_id: "shufersal" or "tivtaam" — omit to check all.
+        store_id: "shufersal", "tivtaam", or "ramilevi" — omit to check all.
         test_query: Simple English word to test search (default: "eggs").
     """
+    search_query = query_to_hebrew(test_query)
     stores = _active_stores([store_id] if store_id else None)
     settings = _get_settings()
     lines = ["=== Israel Grocery MCP Diagnostics ===\n"]
@@ -564,14 +592,16 @@ async def diagnose(store_id: Optional[str] = None, test_query: str = "eggs") -> 
             if store.store_id == "tivtaam":
                 lines.append(f"  Session  : user_id={session.get('user_id')}  email={session.get('email')}")
                 lines.append(f"             token={'yes' if session.get('token') else 'NO'}  cart_id={session.get('cart_id')}")
+            elif store.store_id == "ramilevi":
+                lines.append(f"  Session  : token={'yes' if session.get('token') else 'NO'}  user_id={session.get('user_id', 'N/A')}")
             else:
                 lines.append(f"  Session  : authenticated={session.get('authenticated')}  cookies={session.get('cookie_count', 0)}")
         else:
             lines.append("  Session  : none — not logged in")
 
         try:
-            raw = await store.raw_search(test_query)
-            lines.append(f"  Search   : '{test_query}' → HTTP {raw.get('status', '?')}  url={raw.get('url', '')[:80]}")
+            raw = await store.raw_search(search_query)
+            lines.append(f"  Search   : '{search_query}' → HTTP {raw.get('status', '?')}  url={raw.get('url', '')[:80]}")
             lines.append(f"  Body     : keys={raw.get('body_keys', '?')}")
             if "error" in raw:
                 lines.append(f"  Error    : {raw['error']}")
@@ -580,7 +610,7 @@ async def diagnose(store_id: Optional[str] = None, test_query: str = "eggs") -> 
             lines.append(traceback.format_exc()[-300:])
 
         try:
-            products = await store.search(test_query, max_results=3)
+            products = await store.search(search_query, max_results=3)
             lines.append(f"  Results  : {len(products)} products parsed")
             for p in products[:2]:
                 lines.append(f"    • {p.name}  {p.display_price}  (id={p.product_id})")

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from models import IngredientIntent, IngredientMatch, StoreProduct, UserPreferences
 from matching.ranker import choose_best
+from query_hebrew import query_to_hebrew
 from stores.base import BaseStore
 
 # Synonym expansion for better search coverage
@@ -37,13 +38,16 @@ _EN_SYNONYMS: dict[str, list[str]] = {
 
 
 def _search_queries(ingredient: IngredientIntent) -> list[str]:
-    """Generate 1-3 search queries for an ingredient, broadest first."""
-    queries = [ingredient.name]
-    # Add custom search terms from the ingredient itself
+    """Generate 1-3 search queries for an ingredient. Always prefer Hebrew for Israeli stores."""
+    # Translate to Hebrew first — Israeli store APIs index in Hebrew
+    hebrew_name = query_to_hebrew(ingredient.name)
+    queries = [hebrew_name]
+    # Add custom search terms (translated)
     for term in ingredient.search_terms:
-        if term not in queries:
-            queries.append(term)
-    # Add English synonyms / Hebrew hint
+        translated = query_to_hebrew(term)
+        if translated not in queries:
+            queries.append(translated)
+    # Add English synonyms / Hebrew variants for coverage
     lower = ingredient.name.lower()
     for key, variants in _EN_SYNONYMS.items():
         if key in lower:

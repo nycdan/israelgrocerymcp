@@ -292,13 +292,50 @@ class TivTaamStore(BaseStore):
 
     async def get_cart(self) -> CartView:
         client = await self._get_client()
+        session = self._ss.load_session(STORE_ID) or {}
+        cart_id = session.get("cart_id")
+
+        # Try GET /carts/{cart_id} first — more reliable than /orders
+        if cart_id:
+            try:
+                resp = await client.get(f"{self._cfg.carts_url}/{cart_id}")
+                if resp.status_code == 200:
+                    return self._parse_cart(resp.json())
+            except Exception:
+                pass
+
+        # Fall back to /orders (returns 403 in some session states)
         try:
             resp = await client.get(self._cfg.orders_url)
-            if resp.status_code != 200:
-                return CartView(store_id=STORE_ID)
-            return self._parse_cart(resp.json())
+            if resp.status_code == 200:
+                return self._parse_cart(resp.json())
         except Exception:
-            return CartView(store_id=STORE_ID)
+            pass
+
+        # Last resort: reconstruct CartView from the locally-cached lines in session
+        return self._cart_from_session(session)
+
+    def _cart_from_session(self, session: dict) -> CartView:
+        """Reconstruct a CartView from the locally-cached cart_lines saved in session."""
+        cached = session.get("cart_lines") or []
+        cart_id = session.get("cart_id")
+        lines = []
+        for raw in cached:
+            pid = str(raw.get("retailerProductId") or "")
+            qty = float(raw.get("quantity") or 1)
+            is_weighted = raw.get("soldBy") == "weight"
+            lines.append(CartLine(
+                product_id=pid,
+                product_name=raw.get("name") or f"Product {pid}",
+                quantity=qty,
+                is_weighted=is_weighted,
+            ))
+        return CartView(
+            store_id=STORE_ID,
+            cart_id=str(cart_id) if cart_id else None,
+            lines=lines,
+            item_count=len(lines),
+        )
 
     async def _fetch_product_meta(self, product_id: str) -> dict:
         """Fetch a single product to read isWeighable and unitResolution."""
@@ -344,6 +381,10 @@ class TivTaamStore(BaseStore):
         current = await self.get_cart()
         cart_id = current.cart_id or (session.get("cart_id") or None)
 
+        # Build the merged items list from current cart lines.
+        # current.lines may be empty when /orders returns 403 AND there are no session-cached
+        # lines yet (first item). After the first successful POST, session["cart_lines"] is
+        # populated and _cart_from_session() ensures subsequent calls return prior items.
         merged: list[dict] = []
         for line in current.lines:
             merged.append({
@@ -352,7 +393,17 @@ class TivTaamStore(BaseStore):
                 "soldBy": "weight" if line.is_weighted else "unit",
                 "type": 1,
                 "isCase": False,
+                "name": line.product_name,  # kept locally for session cache only
             })
+
+        # Fetch product name for the new item (best-effort, used only in local cache)
+        new_item_name = ""
+        if meta:
+            name_data = meta.get("names") or {}
+            if isinstance(name_data, dict):
+                he = name_data.get("1") or {}
+                new_item_name = (he.get("short") or he.get("long") if isinstance(he, dict) else str(he)) or ""
+
         # Merge or append new item
         pid_int = int(product_id) if product_id.isdigit() else product_id
         for line in merged:
@@ -366,6 +417,7 @@ class TivTaamStore(BaseStore):
                 "soldBy": sold_by,
                 "type": 1,
                 "isCase": False,
+                "name": new_item_name,
             })
 
         client = await self._get_client()
@@ -389,14 +441,23 @@ class TivTaamStore(BaseStore):
             new_cart_id = data.get("id") or data.get("cartId") or data.get("serverCartId")
             if new_cart_id:
                 session["cart_id"] = str(new_cart_id)
-                self._ss.save_session(STORE_ID, session)
+            # Cache merged lines locally so subsequent adds can read the full cart
+            # even when GET /orders returns 403.
+            # Strip the local-only "name" key before storing (keep payload clean).
+            session["cart_lines"] = merged
+            self._ss.save_session(STORE_ID, session)
 
-            qty_label = f"{quantity} kg" if is_weighable else f"×{quantity}"
+            parsed_cart = self._parse_cart(data)
+            # If the API response has 0 lines (common on POST 201), reconstruct from cache
+            if not parsed_cart.lines:
+                parsed_cart = self._cart_from_session(session)
+
+            qty_label = f"{quantity} kg" if is_weighable else f"×{int(quantity) if quantity == int(quantity) else quantity}"
             return CartMutationResult(
                 success=True, store_id=STORE_ID,
                 product_id=product_id, quantity=quantity,
-                message=f"Added {qty_label} to Tiv Taam cart (cart_id={new_cart_id}).",
-                cart=self._parse_cart(data),
+                message=f"Added {qty_label} to Tiv Taam cart ({parsed_cart.item_count} items total).",
+                cart=parsed_cart,
             )
         except Exception as exc:
             return CartMutationResult(
