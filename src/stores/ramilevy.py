@@ -296,7 +296,8 @@ class RamiLevyStore(BaseStore):
         self._clear_profile_locks(browser_dir)
 
         login_url = f"{self._cfg.base_url}/he"
-        captured_token: dict[str, str] = {}  # mutable so the listener can write to it
+        captured_token: dict[str, str] = {}   # mutable so the listener can write to it
+        captured_store: dict[str, int] = {}   # store ID extracted from cart requests
 
         # Authenticated API paths — the user token will only appear in requests to these.
         # Anonymous/public catalog requests use a separate client credential, not a user JWT.
@@ -339,6 +340,22 @@ class RamiLevyStore(BaseStore):
                     f"[israelgrocery] ✅ User token captured from '{hdr}' on {url[:80]}",
                     file=sys.stderr,
                 )
+                # Also try to capture the store ID from the cart request body
+                if "/api/v2/cart" in url and not captured_store:
+                    try:
+                        import json as _json
+                        body = request.post_data
+                        if body:
+                            body_obj = _json.loads(body)
+                            sid = body_obj.get("store")
+                            if sid and isinstance(sid, int):
+                                captured_store["store_id"] = sid
+                                print(
+                                    f"[israelgrocery] ✅ Cart store_id captured: {sid}",
+                                    file=sys.stderr,
+                                )
+                    except Exception:
+                        pass
 
         token = None
         debug_msg = ""
@@ -379,7 +396,7 @@ class RamiLevyStore(BaseStore):
                     cand_parts = cand.split(".")
                     if cand and len(cand_parts) == 3 and all(len(p) > 4 for p in cand_parts):
                         token = cand
-                        self._save_browser_token(token)
+                        self._save_browser_token(token, cart_store_id=captured_store.get("store_id"))
                         return (
                             f"✅ Rami Levy: already logged in (token from {captured_token.get('source')}). "
                             "Session saved."
@@ -393,7 +410,7 @@ class RamiLevyStore(BaseStore):
                             cand2_parts = cand2.split(".")
                             if len(cand2_parts) == 3 and all(len(p) > 4 for p in cand2_parts):
                                 token = cand2
-                                self._save_browser_token(token)
+                                self._save_browser_token(token, cart_store_id=captured_store.get("store_id"))
                                 return (
                                     f"✅ Rami Levy: already logged in (token from {result.get('source')} "
                                     f"key={result.get('key')}). Session saved."
@@ -464,7 +481,7 @@ class RamiLevyStore(BaseStore):
         except Exception as exc:
             # If we captured a token via network before the crash, use it
             if captured_token.get("token"):
-                self._save_browser_token(captured_token["token"])
+                self._save_browser_token(captured_token["token"], cart_store_id=captured_store.get("store_id"))
                 return (
                     f"✅ Logged in to Rami Levy (token from {captured_token.get('source')}). "
                     "Browser closed. Session saved."
@@ -479,16 +496,17 @@ class RamiLevyStore(BaseStore):
                 "Please share the above so we can fix token detection."
             )
 
-        self._save_browser_token(token)
+        self._save_browser_token(token, cart_store_id=captured_store.get("store_id"))
         return "✅ Logged in to Rami Levy! Session token captured automatically."
 
-    def _save_browser_token(self, token: str) -> None:
-        """Persist a token obtained from the browser into the session store."""
+    def _save_browser_token(self, token: str, cart_store_id: Optional[int] = None) -> None:
+        """Persist a token (and optionally the correct cart store ID) into the session store."""
         session = self._ss.load_session(STORE_ID) or {}
         session.update({
             "token": token,
             "items": session.get("items", {}),
-            "cart_store_id": self._cfg.cart_store_id,
+            # Prefer the captured store ID (from the browser's actual cart call) over the default
+            "cart_store_id": cart_store_id or session.get("cart_store_id") or self._cfg.cart_store_id,
         })
         session.pop("pending_email", None)
         self._ss.save_session(STORE_ID, session)
