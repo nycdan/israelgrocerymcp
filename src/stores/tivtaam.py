@@ -64,6 +64,19 @@ class TivTaamStore(BaseStore):
     def _invalidate_client(self) -> None:
         self._client = None
 
+    async def _try_refresh_session(self) -> bool:
+        """Re-authenticate using credentials stored in config (.env).
+
+        Called automatically when the API returns 401/403, which typically
+        means the JWT has expired even though the cached token still exists.
+        Returns True if the new login succeeded, False if no credentials are
+        configured or the login attempt failed.
+        """
+        if not (self._cfg.email and self._cfg.password):
+            return False
+        msg = await self.login(self._cfg.email, self._cfg.password)
+        return msg.startswith("✅")
+
     # ------------------------------------------------------------------
     # Auth
     # ------------------------------------------------------------------
@@ -304,11 +317,18 @@ class TivTaamStore(BaseStore):
             except Exception:
                 pass
 
-        # Fall back to /orders (returns 403 in some session states)
+        # Fall back to /orders (returns 403 when the JWT has expired)
         try:
             resp = await client.get(self._cfg.orders_url)
             if resp.status_code == 200:
                 return self._parse_cart(resp.json())
+            if resp.status_code in (401, 403):
+                # Token likely expired — try to refresh automatically
+                if await self._try_refresh_session():
+                    client = await self._get_client()  # rebuilt with new token
+                    resp2 = await client.get(self._cfg.orders_url)
+                    if resp2.status_code == 200:
+                        return self._parse_cart(resp2.json())
         except Exception:
             pass
 
@@ -431,6 +451,12 @@ class TivTaamStore(BaseStore):
                     resp = await client.post(self._cfg.carts_url, json={"lines": merged})
             else:
                 resp = await client.post(self._cfg.carts_url, json={"lines": merged})
+
+            if resp.status_code in (401, 403):
+                # Token expired mid-session — refresh and retry once
+                if await self._try_refresh_session():
+                    client = await self._get_client()
+                    resp = await client.post(self._cfg.carts_url, json={"lines": merged})
 
             if resp.status_code not in (200, 201):
                 return CartMutationResult(

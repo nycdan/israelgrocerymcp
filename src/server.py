@@ -302,13 +302,14 @@ async def show_cart(store_id: Optional[str] = None) -> str:
         if not cart.lines:
             parts.append(f"**{store.store_name}**: cart is empty")
             continue
-        sub = [f"**{store.store_name} cart** ({cart.item_count} items, total: {cart.total:.2f}₪):"]
+        total_str = f"{cart.total:.2f}₪" if cart.total is not None else "—"
+        sub = [f"**{store.store_name} cart** ({cart.item_count} items, total: {total_str}):"]
         for line in cart.lines:
-            price_str = f"{line.price:.2f}₪/ea" if line.price else ""
-            total_str = f"= {line.total:.2f}₪" if line.total else ""
-            sub.append(f"  • {line.product_name}  x{line.quantity:g}  {price_str}  {total_str}".rstrip())
+            price_str = f"{line.price:.2f}₪/ea" if line.price is not None else ""
+            line_total_str = f"= {line.total:.2f}₪" if line.total is not None else ""
+            sub.append(f"  • {line.product_name}  x{line.quantity:g}  {price_str}  {line_total_str}".rstrip())
         sub.append(f"  ─────────────────")
-        sub.append(f"  Total: {cart.total:.2f}₪")
+        sub.append(f"  Total: {total_str}")
         parts.append("\n".join(sub))
     return "\n\n".join(parts) if parts else "No carts found."
 
@@ -327,7 +328,9 @@ async def add_to_cart(store_id: str, product_id: str, quantity: float = 1.0) -> 
     result = await store.add_to_cart(product_id, quantity)
     if result.success:
         cart_info = (
-            f" Cart now has {result.cart.item_count} items, total: {result.cart.total:.2f}₪."
+            f" Cart now has {result.cart.item_count} items"
+            + (f", total: {result.cart.total:.2f}₪" if result.cart.total is not None else "")
+            + "."
             if result.cart else ""
         )
         return f"✅ {result.message}{cart_info}"
