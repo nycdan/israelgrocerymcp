@@ -1,155 +1,128 @@
-# Installing Israel Grocery MCP on a New Computer
+# How to Install the Israel Grocery Plugin for Claude
 
-This guide sets up the Israel Grocery MCP server so Claude Desktop can search products,
-compare prices, and manage your cart at Shufersal and Tiv Taam.
+This plugin lets you search prices, compare products, and add items to your cart at Shufersal, Tiv Taam, and Rami Levy — all by chatting with Claude.
 
----
-
-## Prerequisites
-
-- [Claude Desktop](https://claude.ai/download) installed and running
-- macOS, Windows, or Linux
+You only need two things: the **Claude desktop app** and the **`israelgrocery.mcpb` file** that was shared with you.
 
 ---
 
-## Step 1 — Install `uv`
+## Step 1 — Download the Claude Desktop App
 
-`uv` is a fast Python package manager. It handles Python and all dependencies automatically.
+If you don't have it yet, download it from [claude.ai/download](https://claude.ai/download) and install it like any normal app.
 
-**macOS / Linux:**
-```bash
-curl -Ls https://astral.sh/uv/install.sh | sh
+---
+
+## Step 2 — Install `uv` (a small background tool)
+
+The plugin needs a tool called `uv` to run. Here's how to install it:
+
+**On a Mac:**
+
+1. Open the **Terminal** app — press `Command + Space`, type `Terminal`, and hit Enter
+2. Copy and paste this line into Terminal, then press Enter:
+
+```
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-**Windows (PowerShell):**
-```powershell
+3. Wait for it to finish, then **close Terminal and open it again**
+
+**On Windows:**
+
+1. Open **PowerShell** — press the Windows key, type `PowerShell`, and hit Enter
+2. Paste this and press Enter:
+
+```
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-After installing, close and reopen your terminal (or restart VS Code / Cursor).
+3. Restart your computer when done
 
 ---
 
-## Step 2 — Clone the repository
+## Step 3 — Install the Plugin
 
-```bash
-git clone https://github.com/danielJL-altius/israelgrocerymcp.git
-cd israelgrocerymcp
-```
+1. Open the **Claude desktop app**
+2. Click **Claude** in the menu bar at the top of your screen → **Settings**
+3. Click the **Extensions** tab
+4. Drag and drop the `israelgrocery.mcpb` file into that window
 
-> If you don't have Git: [git-scm.com/downloads](https://git-scm.com/downloads)
+Claude will install everything automatically. You'll see **Israel Grocery MCP** appear in the list.
 
----
-
-## Step 3 — Set up your credentials
-
-```bash
-cp .env.example .env
-```
-
-Open `.env` in any text editor and fill in your Tiv Taam account details:
-
-```
-TIVTAAM_EMAIL=your@email.com
-TIVTAAM_PASSWORD=yourpassword
-```
-
-Save the file. These credentials are used for auto-login on startup — they stay on your machine and are never sent anywhere except the Tiv Taam API.
+5. Restart Claude (quit and reopen it)
 
 ---
 
-## Step 4 — Install Playwright (for Shufersal login)
+## Step 4 — Save Your Tiv Taam Credentials (Recommended)
 
-```bash
-cd israelgrocerymcp
-uv run playwright install chromium
-```
+This step lets the plugin log back in to Tiv Taam automatically if your session ever expires — so you never get interrupted mid-shop.
 
-This downloads a headless browser used to log in to Shufersal. You only need to do this once.
+1. Find the folder where Claude installed the plugin. On a Mac it's usually:
+   ```
+   ~/Library/Application Support/Claude/extensions/israelgrocery/
+   ```
+   On Windows:
+   ```
+   %APPDATA%\Claude\extensions\israelgrocery\
+   ```
+2. Inside that folder, create a new plain text file called exactly `.env` (no other extension)
+3. Add these two lines, replacing the values with your actual Tiv Taam email and password:
+   ```
+   TIVTAAM_EMAIL=your@email.com
+   TIVTAAM_PASSWORD=yourpassword
+   ```
+4. Save the file and restart Claude
 
----
-
-## Step 5 — Configure Claude Desktop
-
-Find the Claude Desktop config file:
-
-| OS | Path |
-|---|---|
-| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
-| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
-| Linux | `~/.config/Claude/claude_desktop_config.json` |
-
-Open the file (create it if it doesn't exist) and add the following — **replace the path** with the actual location where you cloned the repo:
-
-```json
-{
-  "mcpServers": {
-    "israelgrocery": {
-      "command": "uv",
-      "args": [
-        "--directory",
-        "/path/to/israelgrocerymcp",
-        "run",
-        "israelgrocery-mcp"
-      ]
-    }
-  }
-}
-```
-
-**Example paths:**
-- macOS: `"/Users/yourname/israelgrocerymcp"`
-- Windows: `"C:\\Users\\yourname\\israelgrocerymcp"`
-
-If the file already has other MCP servers, just add the `"israelgrocery"` block inside the existing `"mcpServers"` object.
+> **Note:** This file stays only on your computer and is never shared or uploaded anywhere. It's just for auto-login.
 
 ---
 
-## Step 6 — Restart Claude Desktop
+## Step 5 — Log In to Your Stores
 
-Fully quit and reopen Claude Desktop. You should see **Israel Grocery** appear in the tools list (the hammer icon).
+Open a new chat in Claude. You only need to do this once per store — your login is saved after that.
+
+**Tiv Taam** — just tell Claude your email and password:
+> *"Log me in to Tiv Taam with email your@email.com and password yourpassword"*
+
+**Shufersal** — a browser window will open for you to log in:
+> *"Log me in to Shufersal"*
+
+**Rami Levy** — same, a browser window opens:
+> *"Log me in to Rami Levy"*
 
 ---
 
-## Verify it's working
+## Step 6 — Start Shopping
 
-In a new Claude chat, type:
+Once logged in, just chat naturally with Claude. For example:
 
-> *"Run the grocery diagnose tool"*
-
-Claude will check the connection to both stores and show login status.
-
----
-
-## Updating to the latest version
-
-```bash
-cd israelgrocerymcp
-git pull
-```
-
-Then restart Claude Desktop. No reinstallation needed.
+- *"Search for cottage cheese and compare prices"*
+- *"What's the cheapest basmati rice?"*
+- *"Add 2 packs of Tnuva milk to my Tiv Taam cart"*
+- *"Add all the ingredients for shakshuka to my cart from the cheapest store"*
 
 ---
 
 ## Troubleshooting
 
+**The Extensions tab doesn't appear in Claude settings**
+Make sure you have the latest version of Claude desktop. Download the update from [claude.ai/download](https://claude.ai/download).
+
 **"uv: command not found"**
-Close and reopen your terminal after the install in Step 1. On Windows, restart the system if needed.
+Close your terminal/PowerShell completely, reopen it, and try the install command again. On Windows, a full restart usually fixes this.
 
-**"israelgrocery-mcp not showing in Claude"**
-Double-check the path in `claude_desktop_config.json` — it must be the exact absolute path to the cloned folder, with no trailing slash.
+**Tiv Taam login fails**
+Check that you typed your email and password correctly with no extra spaces.
 
-**"Not logged in to Tiv Taam"**
-Make sure your `.env` file exists in the `israelgrocerymcp` folder (not the parent) and has the correct email/password. Restart Claude Desktop after editing it.
+**The Shufersal or Rami Levy browser window doesn't open**
+Open Terminal (Mac) or PowerShell (Windows) and run:
 
-**Shufersal login**
-Shufersal requires a browser-based login. Ask Claude: *"Log me in to Shufersal"* — it will open a browser window for you to complete the login once, then sessions are saved automatically.
-
-**Rami Levy login / "Playwright isn't installed"**
-Rami Levy uses the same Chromium browser. If you see "Playwright isn't installed", run:
-```bash
-cd /path/to/your/israelgrocery
-uv run playwright install chromium
 ```
-Then restart Claude Desktop. For Rami Levy: ask *"Log me in to Rami Levy"* → browser opens → log in → close browser → ask *"Capture my Rami Levy session"*.
+uv tool run playwright install chromium
+```
+
+Then restart Claude and try again.
+
+---
+
+*Plugin version 0.1.1 · Made for Claude desktop*

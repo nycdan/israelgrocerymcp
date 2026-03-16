@@ -2,7 +2,7 @@
   "manifest_version": "0.1",
   "name": "israelgrocery",
   "display_name": "Israel Grocery MCP",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Unified MCP server for Israeli grocery shopping across Shufersal and Tiv Taam. Compare prices, plan recipes, and add items to cart from the best-priced store.",
   "author": {
     "name": "danielJL-altius",
@@ -12,12 +12,9 @@
     "type": "python",
     "entry_point": "src/server.py",
     "mcp_config": {
-      "command": "uv",
+      "command": "/bin/sh",
       "args": [
-        "--directory",
-        "${__dirname}",
-        "run",
-        "israelgrocery-mcp"
+        "${__dirname}/run.sh"
       ],
       "env": {
         "ISRAELGROCERY_STATE_DIR": ".local/state",
