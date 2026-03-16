@@ -143,14 +143,13 @@ class ShufersalStore(BaseStore):
                 try:
                     page = ctx.pages[0] if ctx.pages else await ctx.new_page()
                     await page.goto(self._cfg.login_url, wait_until="domcontentloaded")
-                    await page.goto(self._cfg.cart_url, wait_until="domcontentloaded")
                     deadline_ms = int(self._cfg.login_timeout * 1000)
-                    await page.wait_for_timeout(2_000)
+                    # Wait for the user to complete login: Shufersal redirects away from
+                    # /login and /authentication pages once authentication succeeds.
                     await page.wait_for_function(
                         """() => {
-                          const text = document.body?.innerText?.toLowerCase() || "";
                           const url = window.location.href.toLowerCase();
-                          return url.includes("/cart") || text.includes("cart") || text.includes("עגלת");
+                          return !url.includes('/login') && !url.includes('/authentication');
                         }""",
                         timeout=deadline_ms,
                     )
