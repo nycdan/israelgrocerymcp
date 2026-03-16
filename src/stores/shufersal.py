@@ -86,13 +86,21 @@ class ShufersalStore(BaseStore):
             except httpx.HTTPError:
                 continue
             if "application/json" in resp.headers.get("content-type", ""):
-                payload = resp.json()
-                authenticated = bool(
-                    payload.get("authenticated")
-                    or payload.get("loggedIn")
-                    or payload.get("isAuthenticated")
-                    or payload.get("customer")
-                )
+                try:
+                    payload = resp.json()
+                except Exception:
+                    payload = {}
+                if isinstance(payload, dict):
+                    authenticated = bool(
+                        payload.get("authenticated")
+                        or payload.get("loggedIn")
+                        or payload.get("isAuthenticated")
+                        or payload.get("customer")
+                    )
+                else:
+                    # Shufersal /authentication/status returns a plain JSON value
+                    # (e.g. "true", true) when the user is authenticated.
+                    authenticated = bool(payload) and resp.status_code < 400
                 self._ss.mark_validation(STORE_ID, authenticated, f"Checked via {ep}")
                 return authenticated
             # HTML fallback
@@ -156,8 +164,10 @@ class ShufersalStore(BaseStore):
                     state = await ctx.storage_state()
                     self._ss.save_storage_state(STORE_ID, state)
                     ok = await self.check_login_status()
+                    cookies = state.get("cookies", []) if isinstance(state, dict) else []
                     domains = sorted({
-                        c.get("domain", "") for c in state.get("cookies", []) if c.get("domain")
+                        c.get("domain", "") for c in cookies
+                        if isinstance(c, dict) and c.get("domain")
                     })
                     status = "✅ Logged in" if ok else "⚠️ Session saved but auth check inconclusive"
                     return f"{status}. Cookies from: {', '.join(domains) or 'none'}."
