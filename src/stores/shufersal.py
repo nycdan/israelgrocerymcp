@@ -354,15 +354,33 @@ class ShufersalStore(BaseStore):
             return CartView(store_id=STORE_ID, warnings=[f"Cart fetch failed: {exc}"])
 
     async def _fetch_csrf_token(self) -> Optional[str]:
-        try:
-            resp = await self._request("GET", f"{self._cfg.storefront_prefix}/cart/cartsummary")
-            soup = BeautifulSoup(resp.text, "html.parser")
-            node = soup.select_one('input[name="CSRFToken"], input[name="_csrf"], meta[name="csrf-token"]')
-            if not node:
-                return None
-            return node.get("value") or node.get("content")
-        except Exception:
-            return None
+        # 1. Check browser cookies saved during login — most reliable source.
+        #    SAP Commerce sets a CSRFToken cookie that must mirror the form/header value.
+        state = self._ss.load_storage_state(STORE_ID)
+        for cookie in state.get("cookies", []):
+            if cookie.get("name", "").upper() in ("CSRFTOKEN", "CSRF-TOKEN", "_CSRF"):
+                val = cookie.get("value", "")
+                if val:
+                    return val
+
+        # 2. Fallback: scrape from a page (homepage tends to stay stable).
+        for endpoint in (
+            f"{self._cfg.storefront_prefix}/",
+            f"{self._cfg.storefront_prefix}/cart/cartsummary",
+        ):
+            try:
+                resp = await self._request("GET", endpoint)
+                soup = BeautifulSoup(resp.text, "html.parser")
+                node = soup.select_one(
+                    'input[name="CSRFToken"], input[name="_csrf"], meta[name="csrf-token"]'
+                )
+                if node:
+                    val = node.get("value") or node.get("content")
+                    if val:
+                        return val
+            except Exception:
+                continue
+        return None
 
     async def add_to_cart(
         self,
@@ -378,28 +396,57 @@ class ShufersalStore(BaseStore):
         ]
         if csrf:
             for p in payload_variants:
+                p["CSRFToken"] = csrf
                 p["_csrf"] = csrf
         endpoints = [
             "/cart/add",
             f"{self._cfg.storefront_prefix}/cart/add",
             "/cart/addGrid",
         ]
+        extra_headers: dict[str, str] = {
+            "Referer": self._cfg.cart_url,
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        if csrf:
+            extra_headers["X-CSRF-Token"] = csrf
         excerpt = ""
         for endpoint in endpoints:
             for payload in payload_variants:
                 try:
                     resp = await self._request(
                         "POST", endpoint, data=payload,
-                        extra_headers={
-                            "Referer": self._cfg.cart_url,
-                            "X-Requested-With": "XMLHttpRequest",
-                        },
+                        extra_headers=extra_headers,
                     )
                     excerpt = resp.text[:400]
                 except httpx.HTTPError as exc:
                     excerpt = str(exc)
                     continue
-                if resp.status_code < 400 and "login" not in resp.text.lower():
+                if resp.status_code >= 400:
+                    continue
+                # Detect silent failures: Hybris returns JSON with error codes
+                # even on HTTP 200 when CSRF is wrong or user is not logged in.
+                ct = resp.headers.get("content-type", "")
+                if "application/json" in ct:
+                    try:
+                        body = resp.json()
+                        if isinstance(body, dict):
+                            # Success: SAP Commerce returns quantityAdded or entry
+                            if body.get("quantityAdded") or body.get("entry"):
+                                return CartMutationResult(
+                                    success=True, store_id=STORE_ID,
+                                    product_id=product_id, quantity=quantity,
+                                    message="Item added to Shufersal cart.",
+                                )
+                            # Any explicit error code → real failure
+                            err = body.get("errorCode") or body.get("statusCode") or body.get("reason")
+                            if err:
+                                excerpt = f"API error: {err}"
+                                continue
+                    except Exception:
+                        pass
+                # HTML / unknown response: treat as success only if no login/error signal
+                text_lower = resp.text.lower()
+                if "login" not in text_lower and "error" not in text_lower:
                     return CartMutationResult(
                         success=True, store_id=STORE_ID,
                         product_id=product_id, quantity=quantity,
